@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <title>E-Democracy</title>
+    <meta name="description" content="A demo platform for political parties and people">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!-- We use Sakura, a classless CSS framework to make the site look decent -->
+    <link rel="stylesheet" href="https://unpkg.com/sakura.css/css/sakura.css" type="text/css">
+
+    <script src="/sdk.js"></script>
+    <script src="/helpers.js"></script>
+	
+	<script>
+		let client = null;
+		let currentAccountAddress = null;
+		
+		// Get the schema in base64 format with the following command:
+        // cargo concordium build --schema-base64-out -
+        let rawModuleSchema = '//8DAQAAAAsAAABlX2RlbW9jcmFjeQEAFAADAAAACwAAAGRlc2NyaXB0aW9uFgIHAAAAb3B0aW9ucxACFgIIAAAAZW5kX3RpbWUNAgAAAAQAAAB2aWV3ARQAAwAAAAsAAABkZXNjcmlwdGlvbhYCCAAAAGVuZF90aW1lDQUAAAB0YWxseRICFgIEBAAAAHZvdGUEFgIVBAAAAA0AAABQYXJzaW5nRmFpbGVkAg4AAABWb3RpbmdGaW5pc2hlZAITAAAASW52YWxpZFZvdGluZ09wdGlvbgINAAAAQ29udHJhY3RWb3RlcgIA==';
+
+        // Module reference of the deployed module on the blockchain
+        const moduleReference = new concordiumSDK.ModuleReference('51b12ea03a391a12400f3d1c49731c4602f8c0cb3b295b14d1b56198d6afc492');
+		
+		function connect() {
+			client.connect().then(accountAddress=> {
+				currentAccountAddress = accountAddress
+				document.getElementById("accountAddress").innerHTML=accountAddress
+			})
+		}
+		
+		function setupPage() {
+            // Get the client.
+            concordiumHelpers.detectConcordiumProvider()
+                .then((c) => client = c)
+                .catch(console.log);
+        }
+		
+		<!--setup a voting, instantiate a contract from the module-->
+		function setupElection() {
+			if (currentAccountAddress != null) {
+				//get values from input fields
+				let description = document.getElementById("setupElectionDescription").value
+				let end_time = new Date(Date.parse(document.getElementById("setupElectionEndtime").value))
+				let options = document.getElementById("setupElectionOptions").value.split(',').map(s=>s.trim())
+				
+				//send those as a txn to the blockchain
+				client.sendTransaction(
+					currentAccountAddress,
+					concordiumSDK.AccountTransactionType.InitContract,
+					//general txn values
+					{
+						amount: new concordiumSDK.CcdAmount(0n),
+						moduleRef: moduleReference,
+						initName: "e_democracy",
+						maxContractExecutionEnergy: 3000n,
+					},
+					{
+						description: description,
+						options: options,
+						end_time: end_time
+					},
+					rawModuleSchema
+				).then(txHash => console.log(console.log)).catch(console.log)
+			} else {
+                alert("You need to connect to Concordium wallet first.");
+            }
+		}
+		
+		function vote() {
+            const contractIndex = document.getElementById('votingContractIndex').value;
+            const votingOption = document.getElementById('votingOption').value;
+
+            client
+                .sendTransaction(
+                    currentAccountAddress,
+                    concordiumSDK.AccountTransactionType.Update,
+                    {
+                        amount: new concordiumSDK.CcdAmount(0n),
+                        contractAddress: {
+                            index: contractIndex,
+                            subindex: 0n,
+                        },
+                        receiveName: 'e_democracy.vote',
+                        maxContractExecutionEnergy: 3000n,
+                    },
+                    votingOption,
+                    rawModuleSchema,
+                )
+                .then((msg) => alert(`Successfully sent vote with transaction hash: "${msg}"`))
+                .catch(alert);
+        }
+		
+		function idCheckedVote() {
+            const contractIndex = document.getElementById('votingContractIndex').value;
+            const votingOption = document.getElementById('votingOption').value;
+
+            const statement = new concordiumSDK.IdStatementBuilder()
+                .addMembership(concordiumSDK.AttributesKeys.countryOfResidence, ['DK'])
+                .getStatement();
+            // A challenge is some random value included in the proof so they cannot be reused.
+            // In a real setup we would verify that the proof is valid and includes the challenge.
+            // And we would check that the included challenge is not older than x minutes.
+            const challenge = 'AAAAAAAA';
+            if (currentAccountAddress != null) {
+                client
+                    .requestIdProof(currentAccountAddress, statement, challenge)
+                    .then((proof) => {
+                        console.log("Got valid ID proof:", proof);
+                        vote();
+                    })
+                    .catch((error) => {
+                        console.log("Could not create ID proof:", error);
+                        alert("You cannot vote instead of Danes!");
+                    });
+            } else {
+                alert("You need to connect to Concordium wallet first.");
+            }
+        }
+		
+		function viewResult() {
+            const contractIndex = document.getElementById('resultContractIndex').value;
+
+            client.getJsonRpcClient().invokeContract({
+                contract: { index: BigInt(contractIndex), subindex: BigInt(0) },
+                method: 'e_democracy.view',
+            })
+                .then((viewResult) => {
+                    let returnValue = concordiumSDK.deserializeReceiveReturnValue(
+                        concordiumSDK.toBuffer(viewResult.returnValue, 'hex'),
+                        concordiumSDK.toBuffer(rawModuleSchema, 'base64'),
+                        "e_democracy",
+                        "view", // NOTE: Here it is just the entrypoint name, i.e. the contract name is not prepended.
+                        concordiumSDK.SchemaVersion.V2
+                    );
+                    document.getElementById('resultDescription').value = returnValue.description;
+                    document.getElementById('resultEndtime').value = returnValue.end_time;
+                    // Making the tally slightly prettier.
+                    const tally = returnValue.tally.map((r) => r[0] + ": " + r[1]);
+                    document.getElementById('resultTally').innerHTML = tally;
+                })
+                .catch(alert);
+        }
+
+
+        // Set up the page when the DOM is loaded.
+        addEventListener("DOMContentLoaded", (_) => setupPage()).catch(console.log);
+	</script>
+	
+	
+</head>
+
+<body>
+	<article>
+		<!--section for wallet connection-->
+		<section>
+			<h2>Connected Account:<h2><br />
+			<em id="accountAddress">None</em><br></br>
+			<button onclick="connect()">Connect to Concordium browser wallet</button>
+		</section>
+		
+		<!--section for create a voting for political parties-->
+		<section>
+            <h2>Set up a new voting</h2>
+            <p>Enter parties in a comma-separated list:</p>
+            <label>Description:<br /><input type="text" placeholder="Voting for..." value="Political Parties"
+                    id="setupElectionDescription" /></label>
+            <label>Endtime:<br /><input type="datetime-local" value="2030-01-08T20:00"
+                    id="setupElectionEndtime" /></label>
+            <label>Parties' codes (comma-separated):<textarea placeholder="IN, DK, DE"
+                    id="setupElectionOptions">SD, SL, LD</textarea></label>
+            <button onclick="setupElection()">Create new contest</button>
+        </section>
+		
+		<!--vote to an already created voting prposal-->
+		<section>
+			<h2>Voting!</h2>
+            <label>Contract index:<br /><input type="number" min="0" value="3547" id="votingContractIndex" /></label>
+            <label>Vote for:<br /><input type="text" id="votingOption" /></label>
+            <button onclick="idCheckedVote()">Vote!</button>
+		</section>
+		
+		<!--view the voting results-->
+		<section>
+            <h2>Results</h2>
+            <label>Contract index:<br /><input type="number" min="0" value="3547" id="resultContractIndex" /></label>
+            <button onclick="viewResult()">Get results</button>
+            <br />
+            <label>Description:<br /><input disabled id="resultDescription" /></label>
+            <label>Endtime:<br /><input disabled id="resultEndtime" /></label>
+            <label>Tally:<br /><textarea disabled id="resultTally"></textarea></label>
+        </section>
+		
+	</article>
+</body>
+
+</html>
+	
